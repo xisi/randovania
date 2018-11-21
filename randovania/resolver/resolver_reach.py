@@ -4,12 +4,14 @@ from typing import Dict, Set, List, Iterator, Tuple, Iterable, FrozenSet
 from randovania.game_description.game_description import calculate_interesting_resources
 from randovania.game_description.node import ResourceNode, Node, is_resource_node
 from randovania.game_description.requirements import RequirementList, RequirementSet, SatisfiableRequirements
+from randovania.game_description.resources import ResourceInfo
 from randovania.resolver import debug
 from randovania.resolver.logic import Logic
 from randovania.resolver.state import State
 
 
 class ResolverReach:
+    _state: State
     _nodes: Tuple[Node, ...]
     path_to_node: Dict[Node, Tuple[Node, ...]]
     _satisfiable_requirements: SatisfiableRequirements
@@ -29,10 +31,13 @@ class ResolverReach:
         return RequirementSet(self._satisfiable_requirements)
 
     def __init__(self,
+                 state: State,
                  nodes: Iterable[Node],
                  path_to_node: Dict[Node, Tuple[Node, ...]],
                  requirements: SatisfiableRequirements,
                  logic: Logic):
+
+        self._state = state
         self._nodes = tuple(nodes)
         self._logic = logic
         self.path_to_node = path_to_node
@@ -91,38 +96,53 @@ class ResolverReach:
         else:
             satisfiable_requirements = frozenset()
 
-        return ResolverReach(reach_nodes, path_to_node, satisfiable_requirements, logic)
+        return ResolverReach(initial_state, reach_nodes, path_to_node, satisfiable_requirements, logic)
 
-    def possible_actions(self,
-                         state: State) -> Iterator[ResourceNode]:
+    @property
+    def interesting_resources(self) -> FrozenSet[ResourceInfo]:
+        return calculate_interesting_resources(self._satisfiable_requirements,
+                                               self._state.resources,
+                                               self._state.resource_database)
 
-        for node in self.uncollected_resource_nodes(state):
-            if self._logic.get_additional_requirements(node).satisfied(state.resources, state.resource_database):
+    @property
+    def actions_with_interesting_resources(self) -> Iterator[ResourceNode]:
+        interesting_resources = self.interesting_resources
+
+        # print(" > satisfiable actions, with {} interesting resources".format(len(interesting_resources)))
+        for action in self.uncollected_resource_nodes:
+            for resource, amount in action.resource_gain_on_collect(self._logic.patches):
+                if resource in interesting_resources:
+                    yield action
+                    break
+
+    @property
+    def possible_actions(self) -> Iterator[ResourceNode]:
+        for node in self.uncollected_resource_nodes:
+            if self._logic.get_additional_requirements(node).satisfied(self._state.resources,
+                                                                       self._state.resource_database):
                 yield node
             else:
                 debug.log_skip_action_missing_requirement(node, self._logic.game,
                                                           self._logic.get_additional_requirements(node))
 
-    def satisfiable_actions(self, state: State) -> Iterator[ResourceNode]:
-
+    @property
+    def satisfiable_actions(self) -> Iterator[ResourceNode]:
         if self._satisfiable_requirements:
             # print(" > interesting_resources from {} satisfiable_requirements".format(len(satisfiable_requirements)))
-            interesting_resources = calculate_interesting_resources(self._satisfiable_requirements,
-                                                                    state.resources,
-                                                                    state.resource_database)
+            interesting_resources = self.interesting_resources
 
             # print(" > satisfiable actions, with {} interesting resources".format(len(interesting_resources)))
-            for action in self.possible_actions(state):
+            for action in self.possible_actions:
                 for resource, amount in action.resource_gain_on_collect(self._logic.patches):
                     if resource in interesting_resources:
                         yield action
                         break
 
-    def uncollected_resource_nodes(self,
-                                   state: State) -> Iterator[ResourceNode]:
+    @property
+    def uncollected_resource_nodes(self) -> Iterator[ResourceNode]:
         for node in self.nodes:
             if not is_resource_node(node):
                 continue
 
-            if not state.has_resource(node.resource()):
+            if not self._state.has_resource(node.resource()):
                 yield node

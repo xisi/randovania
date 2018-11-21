@@ -12,7 +12,7 @@ from randovania.resolver.resolver_reach import ResolverReach
 from randovania.resolver.state import State
 
 
-def _simplify_requirement_list(self: RequirementList, state: State) -> Optional[RequirementList]:
+def _simplify_requirement_list(self: RequirementList, state: State, ignore_events: bool) -> Optional[RequirementList]:
     items = []
     for item in self.values():
         if item.negate:
@@ -21,17 +21,23 @@ def _simplify_requirement_list(self: RequirementList, state: State) -> Optional[
         if item.satisfied(state.resources, state.resource_database):
             continue
 
-        if not isinstance(item.resource, PickupIndex):
-            # An empty RequirementList is considered satisfied, so we don't have to add the trivial resource
-            items.append(item)
+        if isinstance(item.resource, PickupIndex):
+            continue
+
+        if ignore_events and item.resource in state.resource_database.event:
+            continue
+
+        items.append(item)
 
     return RequirementList(self.difficulty_level, items)
 
 
 def _simplify_requirement_set_for_additional_requirements(requirements: RequirementSet,
-                                                          state: State) -> RequirementSet:
+                                                          state: State,
+                                                          ignore_events: bool,
+                                                          ) -> RequirementSet:
     new_alternatives = [
-        _simplify_requirement_list(alternative, state)
+        _simplify_requirement_list(alternative, state, ignore_events)
         for alternative in requirements.alternatives
     ]
     return RequirementSet(alternative
@@ -50,7 +56,7 @@ def _inner_advance_depth(state: State, logic: Logic, status_update: Callable[[st
     status_update("Resolving... {} total resources".format(len(state.resources)))
 
     has_action = False
-    for action in reach.satisfiable_actions(state):
+    for action in reach.satisfiable_actions:
         new_result = _inner_advance_depth(
             state=state.act_on_node(action,
                                     logic.patches,
@@ -66,9 +72,27 @@ def _inner_advance_depth(state: State, logic: Logic, status_update: Callable[[st
             has_action = True
 
     debug.log_rollback(state, has_action)
-    if not has_action:
-        logic.additional_requirements[state.node] = _simplify_requirement_set_for_additional_requirements(
-            reach.satisfiable_as_requirement_set, state)
+    logic.additional_requirements[state.node] = _simplify_requirement_set_for_additional_requirements(
+        reach.satisfiable_as_requirement_set, state, False)
+
+    if has_action:
+        base_requirements = logic.additional_requirements[state.node]
+
+        # print("Before!")
+        # base_requirements.pretty_print("** ")
+
+        additional = RequirementSet.impossible()
+        for node in reach.actions_with_interesting_resources:
+            assert not logic.get_additional_requirements(node).satisfied(state.resources, state.resource_database)
+            # print(node)
+            # logic.get_additional_requirements(node).pretty_print(">> ")
+            additional = additional.expand_alternatives(
+                logic.get_additional_requirements(node)
+            )
+
+        # print("SUP!?")
+        logic.additional_requirements[state.node] = base_requirements.union(additional)
+        # logic.additional_requirements[state.node].pretty_print("<< ")
 
     return None, has_action
 
